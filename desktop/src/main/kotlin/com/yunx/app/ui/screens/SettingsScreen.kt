@@ -21,12 +21,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Article
 import androidx.compose.material.icons.outlined.Backup
+import androidx.compose.material.icons.outlined.Cancel
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.NetworkCheck
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Power
@@ -52,8 +55,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
@@ -181,6 +186,8 @@ fun SettingsScreen(
     var includeDownloadRecords by remember { mutableStateOf(true) }
     var includeAuth by remember { mutableStateOf(false) }
     var isWebDavBusy by remember { mutableStateOf(false) }
+    // WebDAV 连接自检结果
+    var webdavTestSteps by remember { mutableStateOf<List<WebDavBackupManager.TestStep>>(emptyList()) }
     // 定时备份间隔（小时，0=关闭）
     var webdavInterval by remember { mutableStateOf(settingsRepo.webdavBackupIntervalHours) }
     var localInterval by remember { mutableStateOf(settingsRepo.localBackupIntervalHours) }
@@ -200,6 +207,7 @@ fun SettingsScreen(
             webdavUser = settingsRepo.webdavUsername
             webdavPassword = settingsRepo.webdavPassword
             webdavInterval = settingsRepo.webdavBackupIntervalHours
+            webdavTestSteps = emptyList()
         }
     }
 
@@ -953,6 +961,87 @@ fun SettingsScreen(
                                     intervalMenuExpanded = false
                                 }
                             )
+                        }
+                    }
+                }
+                // 连接自检：逐步显示 连通→建目录→上传→下载，便于定位 403 等问题
+                OutlinedButton(
+                    onClick = {
+                        if (webdavServer.isBlank() || webdavUser.isBlank()) {
+                            SnackbarController.show("请先填写服务器地址与用户名")
+                            return@OutlinedButton
+                        }
+                        settingsRepo.webdavServerUrl = webdavServer.trim()
+                        settingsRepo.webdavUsername = webdavUser.trim()
+                        settingsRepo.webdavPassword = webdavPassword
+                        val config = WebDavBackupManager.Config(webdavServer.trim(), webdavUser.trim(), webdavPassword)
+                        isWebDavBusy = true
+                        webdavTestSteps = emptyList()
+                        scope.launch {
+                            try {
+                                webdavTestSteps = withContext(Dispatchers.IO) {
+                                    webDavManager.testConnection(config)
+                                }
+                            } catch (e: Exception) {
+                                webdavTestSteps = listOf(
+                                    WebDavBackupManager.TestStep("连接与认证", false, e.message ?: "测试失败")
+                                )
+                            } finally {
+                                isWebDavBusy = false
+                            }
+                        }
+                    },
+                    enabled = !isWebDavBusy,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Outlined.NetworkCheck, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("测试连接（先点这里确认能上传，再备份）")
+                }
+                if (webdavTestSteps.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    val allPassed = webdavTestSteps.all { it.ok }
+                    Surface(
+                        tonalElevation = 1.dp,
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
+                        color = if (allPassed)
+                            androidx.compose.ui.graphics.Color(0xFFE8F5E9)
+                        else
+                            androidx.compose.ui.graphics.Color(0xFFFFEBEE),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(10.dp)) {
+                            Text(
+                                if (allPassed) "全部通过，可以正常备份" else "有步骤未通过，按下面提示处理",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = if (allPassed)
+                                    androidx.compose.ui.graphics.Color(0xFF2E7D32)
+                                else
+                                    androidx.compose.ui.graphics.Color(0xFFC62828)
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            webdavTestSteps.forEach { step ->
+                                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                                    Icon(
+                                        if (step.ok) Icons.Outlined.CheckCircle else Icons.Outlined.Cancel,
+                                        contentDescription = null,
+                                        tint = if (step.ok)
+                                            androidx.compose.ui.graphics.Color(0xFF2E7D32)
+                                        else
+                                            androidx.compose.ui.graphics.Color(0xFFC62828),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Column {
+                                        Text(step.name, style = MaterialTheme.typography.labelMedium)
+                                        Text(
+                                            step.detail,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

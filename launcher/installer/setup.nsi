@@ -13,14 +13,14 @@ SetCompressor /SOLID lzma
   !define ICON "..\..\YunX-Desktop.ico"
 !endif
 !ifndef OUTFILE
-  !define OUTFILE "..\..\release\YunX-Desktop-Fork-1.1.6-Setup.exe"
+  !define OUTFILE "..\..\release\YunX-Desktop-Fork-1.1.7-Setup.exe"
 !endif
 
 !define APPNAME    "云析 YunX-Desktop-fork"
 !define SHORTNAME  "YunX"
 !define EXENAME    "YunX-Desktop-Fork.exe"
 !define AUMID      "YunX-Desktop-fork"
-!define APPVERSION "1.1.6"
+!define APPVERSION "1.1.7"
 
 Name "${APPNAME}"
 OutFile "${OUTFILE}"

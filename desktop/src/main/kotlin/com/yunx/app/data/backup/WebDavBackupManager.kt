@@ -51,6 +51,13 @@ class WebDavBackupManager {
         val size: Long
     )
 
+    /** 连接测试的单步结果（[ok] 为该步是否通过，[detail] 为人类可读说明） */
+    data class TestStep(
+        val name: String,
+        val ok: Boolean,
+        val detail: String
+    )
+
     companion object {
         const val APP_TAG = "yunx_backup"
         const val VERSION = 1
@@ -58,7 +65,7 @@ class WebDavBackupManager {
         const val CONNECT_TIMEOUT_MS = 15_000
         const val READ_TIMEOUT_MS = 60_000
         private const val TAG = "YunX-WebDAV"
-        private const val USER_AGENT = "YunX-Desktop-WebDAV/1.1.6"
+        private const val USER_AGENT = "YunX-Desktop-WebDAV/1.1.7"
 
         /** 服务器预设（一键填充地址，用户名密码仍需自行填写） */
         val PRESETS: LinkedHashMap<String, String> = linkedMapOf(
@@ -170,6 +177,61 @@ class WebDavBackupManager {
             val json = buildBackupJson(options)
             put(config, "yunx-backup.json", json.toByteArray(StandardCharsets.UTF_8))
         }
+
+    /**
+     * 连接自检：依次验证 连通认证 → 建目录 → 上传 → 下载 → 删除清理。
+     * 不抛异常，返回每一步的通过情况，便于区分"能浏览但不能上传（流量/权限）"等问题。
+     */
+    suspend fun testConnection(config: Config): List<TestStep> = withContext(Dispatchers.IO) {
+        val steps = mutableListOf<TestStep>()
+        fun reason(t: Throwable): String = t.message ?: t.javaClass.simpleName
+
+        // 1. 连通与认证（PROPFIND 根目录）
+        val authResult = runCatching { propfind(config, "", depth = "0") }
+        if (authResult.isFailure) {
+            steps += TestStep("连接与认证", false, authResult.exceptionOrNull()?.let(::reason)
+                ?: "无法连接服务器，请检查地址、网络")
+            return@withContext steps
+        }
+        steps += TestStep("连接与认证", true, "服务器可达，账号密码有效")
+
+        // 2. 创建/访问备份目录
+        val dirOk = runCatching { ensureAppDir(config) }.isSuccess
+        if (!dirOk) {
+            val msg = runCatching { ensureAppDir(config) }.exceptionOrNull()?.let(::reason)
+                ?: "无法创建备份目录"
+            steps += TestStep("创建备份目录 YunX", false, msg)
+            return@withContext steps
+        }
+        steps += TestStep("创建备份目录 YunX", true, "目录已存在或创建成功")
+
+        // 3. 上传（写入权限）——坚果云免费版流量用尽时通常就卡在这一步
+        val probeName = "yunx_probe_${System.currentTimeMillis()}.txt"
+        val probePath = "$APP_DIR/$probeName"
+        val uploadErr = runCatching {
+            put(config, probePath, "yunx probe".toByteArray(StandardCharsets.UTF_8))
+        }.exceptionOrNull()
+        if (uploadErr != null) {
+            steps += TestStep("上传（写入权限）", false, reason(uploadErr))
+            return@withContext steps
+        }
+        steps += TestStep("上传（写入权限）", true, "测试文件上传成功")
+
+        // 4. 下载（读取权限）并校验内容
+        val readErr = runCatching {
+            val b = get(config, probePath)
+            check(String(b, StandardCharsets.UTF_8).trim().contains("yunx probe"))
+        }.exceptionOrNull()
+        if (readErr != null) {
+            steps += TestStep("下载（读取权限）", false, reason(readErr))
+        } else {
+            steps += TestStep("下载（读取权限）", true, "测试文件读回一致")
+        }
+
+        // 5. 删除清理（best-effort，不影响结论）
+        runCatching { delete(config, probePath) }
+        steps
+    }
 
     /**
      * 列出 YunX/ 目录下所有备份文件（.json），按最后修改时间降序（最新在最上面）。
@@ -314,7 +376,7 @@ class WebDavBackupManager {
     /** 常见状态码的可操作提示。 */
     private fun statusHint(code: Int): String = when (code) {
         401 -> "账号或密码错误（坚果云等需使用「第三方应用密码」，不是登录密码）"
-        403 -> "无写入权限被拒绝：请确认使用的是第三方应用密码、账号已开启 WebDAV，且免费版上传流量未超限"
+        403 -> "无写入权限：能浏览/建目录却不能上传，最常见是坚果云免费版每月 1GB 上传流量已用尽（次月恢复或升级），也可能是应用密码无写入权限"
         409 -> "上级目录不存在或存在同名文件"
         507 -> "服务器存储空间不足"
         else -> ""
@@ -424,6 +486,11 @@ class WebDavBackupManager {
         val (code, bytes) = execute(config, "GET", path, Request.Builder().get())
         if (code !in 200..299) throw ioError("下载", code, bytes)
         return bytes
+    }
+
+    private fun delete(config: Config, path: String) {
+        val (code, bytes) = execute(config, "DELETE", path, Request.Builder().delete())
+        if (code !in 200..299 && code != 404) throw ioError("删除", code, bytes)
     }
 
     /**
